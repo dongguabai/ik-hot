@@ -38,6 +38,11 @@ import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.security.AccessController;
 import java.security.PrivilegedAction;
+import java.sql.Connection;
+import java.sql.DriverManager;
+import java.sql.ResultSet;
+import java.sql.SQLException;
+import java.sql.Statement;
 import java.util.*;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -165,7 +170,70 @@ public class Dictionary {
 							pool.scheduleAtFixedRate(new Monitor(location), 10, 60, TimeUnit.SECONDS);
 						}
 					}
+					new Thread(()->{
+						Properties pro = new Properties();
+						try {
+							pro.load(new FileInputStream(PathUtils.get(singleton.getDictRoot(), "mysql.properties").toFile()));
+						} catch (IOException e) {
+							e.printStackTrace();
+						}
 
+						while (true){
+							try {
+								TimeUnit.SECONDS.sleep(5);
+								logger.info("开始从MySQL加载.....");
+								try (Connection conn = DriverManager.getConnection(pro.getProperty("mysql.url"), pro.getProperty("mysql.user"), pro.getProperty("mysql.password"))) {
+									reLoadFromMySQL(conn, pro);
+								}
+								logger.info("从MySQL加载完成.....");
+							}catch (Exception e){
+								logger.error("load from mysql error..",e);
+							}
+						}
+					}).start();
+				}
+			}
+		}
+	}
+
+	static {
+		try {
+			Class.forName("com.mysql.jdbc.Driver");
+		} catch (ClassNotFoundException ignored) {
+		}
+	}
+
+	private static void reLoadFromMySQL(Connection conn, Properties pro) throws Exception {
+		logger.info("从MySQL重新加载词典...start");
+		// 新开一个实例加载词典，减少加载过程对当前词典使用的影响
+		Dictionary tmpDict = new Dictionary(getSingleton().configuration);
+		tmpDict.configuration = getSingleton().configuration;
+		tmpDict.loadMainDict();
+		tmpDict.reloadExtDictFromMySQL(conn);
+		tmpDict.loadStopWordDict();
+		tmpDict.reloadStopDictFromMySQL(conn);
+		getSingleton()._MainDict = tmpDict._MainDict;
+		getSingleton()._StopWords = tmpDict._StopWords;
+		logger.info("从MySQL重新加载词典完毕...end");
+	}
+
+	private void reloadStopDictFromMySQL(Connection conn) throws SQLException {
+		try (Statement statement = conn.createStatement();ResultSet rs = statement.executeQuery("select word from stop_words")) {
+			while(rs.next()) {
+				String word = rs.getString("word");
+				if (word != null ){
+					_StopWords.fillSegment(word.toCharArray());
+				}
+			}
+		}
+	}
+
+	private void reloadExtDictFromMySQL(Connection conn) throws SQLException {
+		try (Statement statement = conn.createStatement();ResultSet rs = statement.executeQuery("select word from ext_words")) {
+			while(rs.next()) {
+				String word = rs.getString("word");
+				if (word != null){
+					_MainDict.fillSegment(word.toCharArray());
 				}
 			}
 		}
